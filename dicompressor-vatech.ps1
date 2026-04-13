@@ -12,7 +12,7 @@ param(
     [string[]]$Arguments
 )
 
-$ErrorActionPreference = "Stop"
+$ErrorActionPreference = "Continue"
 
 $pythonCmd = $null
 $pythonCandidates = @("python3", "python", "py")
@@ -36,7 +36,7 @@ if (-not $pythonCmd) {
     exit 1
 }
 
-$pydicomCheck = & $pythonCmd -c "import pydicom" 2>&1
+$null = & $pythonCmd -c "import pydicom" 2>$null
 if ($LASTEXITCODE -ne 0) {
     Write-Host "Installing required packages..." -ForegroundColor Yellow
     & $pythonCmd -m pip install pydicom numpy Pillow --quiet

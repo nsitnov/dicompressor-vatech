@@ -16,7 +16,7 @@ param(
     [string]$OutputDir = ""
 )
 
-$ErrorActionPreference = "Stop"
+$ErrorActionPreference = "Continue"
 $ScriptDir = Split-Path -Parent $MyInvocation.MyCommand.Path
 $Dicompressor = Join-Path $ScriptDir "dicompressor-vatech.py"
 $Marker = ".dicompressor_vatech_done"
@@ -73,18 +73,17 @@ while ($true) {
         Write-Host ""
         Write-Host "[$timestamp] NEW: $($dir.Name) ($matchCount matching files)" -ForegroundColor Green
 
-        try {
-            $cmdArgs = @("-j", "--skip-if-done")
-            if ($OutputDir -ne "") {
-                $cmdArgs += @("--output-dir", $OutputDir)
-            }
-            $cmdArgs += @("-f", $dir.FullName)
-            $output = & python $Dicompressor @cmdArgs 2>&1
-            $output | ForEach-Object { Write-Host "  $_" }
+        $cmdArgs = @("-j", "--skip-if-done")
+        if ($OutputDir -ne "") {
+            $cmdArgs += @("--output-dir", $OutputDir)
+        }
+        $cmdArgs += @("-f", $dir.FullName)
+        & python $Dicompressor @cmdArgs
+        if ($LASTEXITCODE -eq 0) {
             Write-Host "  Done!" -ForegroundColor Green
         }
-        catch {
-            Write-Host "  FAILED: $_" -ForegroundColor Red
+        else {
+            Write-Host "  FAILED (exit code $LASTEXITCODE)" -ForegroundColor Red
         }
     }
 
