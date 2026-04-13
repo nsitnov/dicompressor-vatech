@@ -36,6 +36,9 @@ VERSION = "1.0.0-vatech"
 PROGRAM_NAME = "DicomPressor Vatech"
 DONE_MARKER = ".dicompressor_vatech_done"
 ARCHIVE_SUFFIXES = (".ct", ".ct.dcm")
+# Ignore tiny direct DICOM series (for example PX/DX images in patient root folders).
+# Real 3D CT/CBCT folders typically contain dozens or hundreds of slices.
+MIN_DIRECT_SERIES_FILES = 8
 
 logging.basicConfig(
     level=logging.INFO,
@@ -194,7 +197,7 @@ def find_vatech_archives(folder: str) -> List[str]:
 
 
 def find_mergeable_dicom_files(folder: str) -> List[str]:
-    results = []
+    series_groups: Dict[str, List[str]] = {}
     for name in sorted(os.listdir(folder)):
         path = os.path.join(folder, name)
         if not os.path.isfile(path):
@@ -203,8 +206,26 @@ def find_mergeable_dicom_files(folder: str) -> List[str]:
             continue
         if not is_dicom_file(path):
             continue
-        if is_single_frame_dicom(path):
-            results.append(path)
+        try:
+            dataset = pydicom.dcmread(path, stop_before_pixels=True)
+        except Exception:
+            continue
+        if parse_num_frames(dataset) > 1:
+            continue
+        series_uid = str(getattr(dataset, "SeriesInstanceUID", "")) or f"unknown:{name}"
+        series_groups.setdefault(series_uid, []).append(path)
+
+    results: List[str] = []
+    for series_uid, files in sorted(series_groups.items()):
+        if len(files) >= MIN_DIRECT_SERIES_FILES:
+            results.extend(sorted(files))
+        else:
+            logger.debug(
+                "Ignoring direct series %s in %s with only %d file(s)",
+                series_uid,
+                folder,
+                len(files),
+            )
     return results
 
 
