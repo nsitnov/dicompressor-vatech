@@ -19,8 +19,9 @@ import tempfile
 import time
 import zipfile
 from datetime import datetime
+from logging.handlers import RotatingFileHandler
 from pathlib import Path
-from typing import Dict, List, Sequence, Tuple
+from typing import Dict, Iterator, List, Optional, Sequence, Tuple
 
 try:
     import pydicom
@@ -39,13 +40,60 @@ ARCHIVE_SUFFIXES = (".ct", ".ct.dcm")
 # Ignore tiny direct DICOM series (for example PX/DX images in patient root folders).
 # Real 3D CT/CBCT folders typically contain dozens or hundreds of slices.
 MIN_DIRECT_SERIES_FILES = 8
+DEFAULT_LOG_FILENAME = "dicompressor-vatech.log"
+LOG_MAX_BYTES = 5 * 1024 * 1024
+LOG_BACKUP_COUNT = 3
+SCAN_PROGRESS_EVERY_FOLDERS = 250
+SCAN_PROGRESS_EVERY_SECONDS = 15.0
 
-logging.basicConfig(
-    level=logging.INFO,
-    format="%(asctime)s [%(levelname)s] %(message)s",
-    datefmt="%H:%M:%S",
-)
 logger = logging.getLogger("dicompressor.vatech")
+
+
+def default_log_path() -> str:
+    return os.path.join(os.path.dirname(os.path.abspath(__file__)), DEFAULT_LOG_FILENAME)
+
+
+def configure_logging(verbose: bool, quiet: bool, log_file: str = "") -> str:
+    console_level = logging.INFO
+    if verbose:
+        console_level = logging.DEBUG
+    elif quiet:
+        console_level = logging.WARNING
+
+    effective_log_file = os.path.abspath(log_file) if log_file else default_log_path()
+    log_dir = os.path.dirname(effective_log_file)
+    if log_dir:
+        os.makedirs(log_dir, exist_ok=True)
+
+    root_logger = logging.getLogger()
+    for handler in list(root_logger.handlers):
+        root_logger.removeHandler(handler)
+    root_logger.setLevel(logging.DEBUG)
+
+    console_formatter = logging.Formatter("%(asctime)s [%(levelname)s] %(message)s", "%H:%M:%S")
+    console_handler = logging.StreamHandler()
+    console_handler.setLevel(console_level)
+    console_handler.setFormatter(console_formatter)
+    root_logger.addHandler(console_handler)
+
+    file_formatter = logging.Formatter("%(asctime)s [%(levelname)s] %(message)s")
+    file_handler = RotatingFileHandler(
+        effective_log_file,
+        maxBytes=LOG_MAX_BYTES,
+        backupCount=LOG_BACKUP_COUNT,
+        encoding="utf-8",
+    )
+    file_handler.setLevel(logging.DEBUG)
+    file_handler.setFormatter(file_formatter)
+    root_logger.addHandler(file_handler)
+
+    logging.captureWarnings(True)
+    logger.debug(
+        "Logging configured: console=%s file=%s",
+        logging.getLevelName(console_level),
+        effective_log_file,
+    )
+    return effective_log_file
 
 
 def print_banner() -> None:
@@ -87,6 +135,8 @@ OPTIONS:
   --watch N         Watch mode: re-scan every N seconds and process only
                     new folders. Implies --skip-if-done.
   --output-dir DIR  Copy merged outputs to DIR after successful processing.
+  --log-file FILE   Write a rotating log file. Default:
+                    {default_log_path()}
   --verbose         Debug-level logging
   --quiet           Warning/error logging only
 
@@ -115,6 +165,9 @@ EXAMPLES:
 
   # Watch + central output directory:
   python dicompressor-vatech.py -j --watch 300 --output-dir /data/merged -f /data/patients
+
+  # Custom log file:
+  python dicompressor-vatech.py -j --watch 300 --log-file /data/logs/vatech.log -f /data/patients
 """
     )
 
@@ -196,6 +249,10 @@ def find_vatech_archives(folder: str) -> List[str]:
     return results
 
 
+def scan_folder_inputs(folder: str) -> Tuple[List[str], List[str]]:
+    return find_mergeable_dicom_files(folder), find_vatech_archives(folder)
+
+
 def find_mergeable_dicom_files(folder: str) -> List[str]:
     series_groups: Dict[str, List[str]] = {}
     for name in sorted(os.listdir(folder)):
@@ -229,21 +286,69 @@ def find_mergeable_dicom_files(folder: str) -> List[str]:
     return results
 
 
-def discover_processable_folders(root: str, recursive: bool) -> List[str]:
+def iter_processable_folders(
+    root: str, recursive: bool
+) -> Iterator[Tuple[str, List[str], List[str]]]:
     root = os.path.abspath(root)
-    if not recursive:
-        direct_dicom = find_mergeable_dicom_files(root)
-        archives = find_vatech_archives(root)
-        return [root] if direct_dicom or archives else []
 
-    candidates: List[str] = []
+    if not recursive:
+        direct_dicom, archives = scan_folder_inputs(root)
+        if direct_dicom or archives:
+            logger.info(
+                "Found processable folder: %s (direct slices=%d, archives=%d)",
+                root,
+                len(direct_dicom),
+                len(archives),
+            )
+            yield root, direct_dicom, archives
+        return
+
+    logger.info("Starting recursive scan under %s", root)
+    scanned_count = 0
+    found_count = 0
+    scan_started = time.time()
+    last_progress_time = scan_started
+
     for current_root, dirnames, _ in os.walk(root):
         dirnames[:] = sorted(d for d in dirnames if not d.startswith("."))
-        direct_dicom = find_mergeable_dicom_files(current_root)
-        archives = find_vatech_archives(current_root)
+        scanned_count += 1
+
+        direct_dicom, archives = scan_folder_inputs(current_root)
         if direct_dicom or archives:
-            candidates.append(current_root)
-    return sorted(candidates)
+            found_count += 1
+            logger.info(
+                "Found processable folder #%d after scanning %d folder(s): %s "
+                "(direct slices=%d, archives=%d)",
+                found_count,
+                scanned_count,
+                current_root,
+                len(direct_dicom),
+                len(archives),
+            )
+            yield current_root, direct_dicom, archives
+
+        now = time.time()
+        if (
+            scanned_count % SCAN_PROGRESS_EVERY_FOLDERS == 0
+            or now - last_progress_time >= SCAN_PROGRESS_EVERY_SECONDS
+        ):
+            logger.info(
+                "Scan progress: scanned %d folder(s), found %d processable folder(s). "
+                "Current=%s",
+                scanned_count,
+                found_count,
+                current_root,
+            )
+            last_progress_time = now
+
+    logger.info(
+        "Finished recursive scan under %s: scanned %d folder(s), found %d "
+        "processable folder(s) in %.1fs",
+        root,
+        scanned_count,
+        found_count,
+        time.time() - scan_started,
+    )
 
 
 def safe_extract_zip(archive_path: str, temp_dir: str) -> List[str]:
@@ -301,6 +406,7 @@ def merge_direct_dicom_files(dicom_files: Sequence[str], output_folder: str) -> 
 
 
 def process_vatech_archive(archive_path: str, source_folder: str, created_names: set) -> List[str]:
+    logger.info("Found Vatech 3D archive: %s", archive_path)
     temp_dir = tempfile.mkdtemp(prefix="dicompressor-vatech-")
     logger.info("Extracting %s into %s", archive_path, temp_dir)
 
@@ -330,10 +436,20 @@ def process_vatech_archive(archive_path: str, source_folder: str, created_names:
         logger.info("Removed temp directory: %s", temp_dir)
 
 
-def process_folder(folder: str, output_dir: str = "") -> Dict[str, object]:
+def process_folder(
+    folder: str,
+    output_dir: str = "",
+    direct_dicom_files: Optional[Sequence[str]] = None,
+    archive_files: Optional[Sequence[str]] = None,
+) -> Dict[str, object]:
     folder = os.path.abspath(folder)
-    direct_dicom_files = find_mergeable_dicom_files(folder)
-    archive_files = find_vatech_archives(folder)
+    if direct_dicom_files is None or archive_files is None:
+        scanned_direct, scanned_archives = scan_folder_inputs(folder)
+        direct_dicom_files = scanned_direct
+        archive_files = scanned_archives
+    else:
+        direct_dicom_files = list(direct_dicom_files)
+        archive_files = list(archive_files)
 
     if not direct_dicom_files and not archive_files:
         raise ValueError(f"No processable DICOM slices or Vatech archives found in {folder}")
@@ -388,23 +504,32 @@ def print_folder_report(report: Dict[str, object], target_root: str) -> None:
         print(f"  -> {os.path.basename(result)} ({size_mb:.1f} MB)")
 
 
-def run_once(target_path: str, recursive: bool, skip_if_done: bool, output_dir: str = "") -> int:
-    candidates = discover_processable_folders(target_path, recursive)
-    if not candidates:
-        print(f"ERROR: No Vatech archives or mergeable DICOM slices found in {target_path}")
-        return 1
+def print_failed_folder(folder: str, exc: Exception) -> None:
+    print(f"\n[FAILED] {folder}")
+    print(f"  {exc}")
 
+
+def run_once(target_path: str, recursive: bool, skip_if_done: bool, output_dir: str = "") -> int:
     processed_reports = []
     skipped = 0
     failures: List[Tuple[str, str]] = []
-    for folder in candidates:
+    found_candidates = False
+
+    for folder, direct_dicom_files, archive_files in iter_processable_folders(target_path, recursive):
+        found_candidates = True
         if skip_if_done and is_already_done(folder):
             skipped += 1
             print(f"SKIPPED (already processed): {folder}")
+            logger.info("Skipping already processed folder: %s", folder)
             continue
 
         try:
-            report = process_folder(folder, output_dir=output_dir)
+            report = process_folder(
+                folder,
+                output_dir=output_dir,
+                direct_dicom_files=direct_dicom_files,
+                archive_files=archive_files,
+            )
             processed_reports.append(report)
             print_folder_report(report, target_path)
             if skip_if_done:
@@ -412,17 +537,30 @@ def run_once(target_path: str, recursive: bool, skip_if_done: bool, output_dir: 
         except Exception as exc:
             failures.append((folder, str(exc)))
             logger.error("Failed to process %s: %s", folder, exc)
-            print(f"\n[FAILED] {folder}")
-            print(f"  {exc}")
+            print_failed_folder(folder, exc)
+
+    if not found_candidates:
+        print(f"ERROR: No Vatech archives or mergeable DICOM slices found in {target_path}")
+        logger.warning("No processable folders found under %s", target_path)
+        return 1
 
     if not processed_reports and skipped:
         print("Nothing new to process.")
+        logger.info("Nothing new to process under %s", target_path)
         return 0
 
     total_outputs = sum(len(report["results"]) for report in processed_reports)
     print(
         f"\nProcessed {len(processed_reports)} folder(s), "
         f"created {total_outputs} merged file(s), skipped {skipped} folder(s)."
+    )
+    logger.info(
+        "Run summary for %s: processed=%d output_files=%d skipped=%d failures=%d",
+        target_path,
+        len(processed_reports),
+        total_outputs,
+        skipped,
+        len(failures),
     )
     if failures:
         print(f"Failed folders: {len(failures)}")
@@ -431,33 +569,83 @@ def run_once(target_path: str, recursive: bool, skip_if_done: bool, output_dir: 
 
 
 def run_watch(target_path: str, recursive: bool, interval: int, output_dir: str = "") -> int:
-    print(f"Watch mode: scanning every {interval}s (Ctrl+C to stop)")
+    print(f"Watch mode: scanning every {interval}s (Ctrl+C to stop)", flush=True)
+    pass_number = 0
     try:
         while True:
-            candidates = discover_processable_folders(target_path, recursive)
+            pass_number += 1
+            pass_started = time.time()
+            logger.info("Starting watch scan pass #%d under %s", pass_number, target_path)
             new_count = 0
+            skipped_done = 0
+            failed_count = 0
+            discovered_count = 0
 
-            for folder in candidates:
+            for folder, direct_dicom_files, archive_files in iter_processable_folders(
+                target_path, recursive
+            ):
+                discovered_count += 1
                 if is_already_done(folder):
+                    skipped_done += 1
+                    logger.info("Skipping already processed folder: %s", folder)
                     continue
 
                 try:
-                    report = process_folder(folder, output_dir=output_dir)
+                    report = process_folder(
+                        folder,
+                        output_dir=output_dir,
+                        direct_dicom_files=direct_dicom_files,
+                        archive_files=archive_files,
+                    )
                     print_folder_report(report, target_path)
                     mark_as_done(folder, report)
                     new_count += 1
                 except Exception as exc:
+                    failed_count += 1
                     logger.error("Failed to process %s: %s", folder, exc)
+                    print_failed_folder(folder, exc)
 
-            if new_count == 0:
+            pass_elapsed = time.time() - pass_started
+            logger.info(
+                "Completed watch scan pass #%d: discovered=%d new=%d skipped_done=%d "
+                "failed=%d elapsed=%.1fs",
+                pass_number,
+                discovered_count,
+                new_count,
+                skipped_done,
+                failed_count,
+                pass_elapsed,
+            )
+
+            if new_count == 0 and failed_count == 0:
                 print(
                     f"[{time.strftime('%H:%M:%S')}] No new folders. Waiting {interval}s...",
-                    end="\r",
+                )
+            else:
+                print(
+                    f"[{time.strftime('%H:%M:%S')}] Pass #{pass_number}: processed {new_count} "
+                    f"new folder(s), skipped {skipped_done}, failed {failed_count}."
                 )
 
-            time.sleep(interval)
+            sleep_seconds = max(0.0, interval - pass_elapsed)
+            if sleep_seconds > 0:
+                logger.info(
+                    "Waiting %.1fs before watch scan pass #%d",
+                    sleep_seconds,
+                    pass_number + 1,
+                )
+                time.sleep(sleep_seconds)
+            else:
+                logger.info(
+                    "Scan pass #%d took %.1fs which exceeded interval %ss; "
+                    "starting the next pass immediately",
+                    pass_number,
+                    pass_elapsed,
+                    interval,
+                )
     except KeyboardInterrupt:
         print("\nWatch mode stopped.")
+        logger.info("Watch mode stopped by user")
         return 0
 
 
@@ -504,15 +692,16 @@ def main() -> int:
         metavar="DIR",
         help="Copy merged result files to DIR after each successful merge",
     )
+    parser.add_argument(
+        "--log-file",
+        dest="log_file",
+        metavar="FILE",
+        help=f"Write logs to FILE (default: {default_log_path()})",
+    )
     parser.add_argument("--verbose", dest="verbose", action="store_true", help="Verbose output")
     parser.add_argument("--quiet", dest="quiet", action="store_true", help="Suppress info output")
 
     args = parser.parse_args()
-
-    if args.verbose:
-        logging.getLogger().setLevel(logging.DEBUG)
-    elif args.quiet:
-        logging.getLogger().setLevel(logging.WARNING)
 
     if args.show_help or len(sys.argv) == 1:
         print_help_detailed()
@@ -523,6 +712,11 @@ def main() -> int:
         print("Dedicated workflow for Vatech DCM_FILE.CT archives")
         print(f"Python {sys.version}")
         return 0
+
+    log_file = configure_logging(args.verbose, args.quiet, args.log_file or "")
+    print(f"Log file: {log_file}", flush=True)
+    logger.info("Starting %s v%s", PROGRAM_NAME, VERSION)
+    logger.info("Log file: %s", log_file)
 
     if not args.merge:
         print("ERROR: This script currently supports only the merge workflow (-j).")
@@ -547,7 +741,7 @@ def main() -> int:
     if args.output_dir:
         output_dir = os.path.abspath(args.output_dir)
         os.makedirs(output_dir, exist_ok=True)
-        print(f"Output directory: {output_dir}")
+        print(f"Output directory: {output_dir}", flush=True)
 
     start_time = time.time()
 
@@ -577,6 +771,7 @@ def main() -> int:
 
     elapsed = time.time() - start_time
     print(f"\nCompleted in {elapsed:.2f} seconds")
+    logger.info("Completed in %.2f seconds with exit code %d", elapsed, exit_code)
     return exit_code
 
 

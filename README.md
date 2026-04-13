@@ -62,9 +62,19 @@ That command:
 - scans every 300 seconds
 - looks recursively under `D:\VatechDatabase\FMData\Files`
 - finds Vatech `DCM_FILE.CT` archives inside patient subfolders
+- starts processing folders as soon as they are found during the scan
 - merges them to multi-frame DICOM
 - copies the merged result to `D:\Vatech\Merged`
 - writes `.dicompressor_vatech_done` in each processed study folder
+- writes a rotating log file named `dicompressor-vatech.log` next to the script by default
+
+### Optional Custom Log File
+
+If you want the log somewhere else:
+
+```powershell
+python .\dicompressor-vatech.py -j --watch 300 --log-file "D:\Vatech\Logs\dicompressor-vatech.log" --output-dir "D:\Vatech\Merged" -f "D:\VatechDatabase\FMData\Files"
+```
 
 ### Optional Windows PowerShell Wrapper
 
@@ -115,6 +125,7 @@ The script is designed for that layout:
 | `--skip-if-done` | Skip folders that already contain `.dicompressor_vatech_done` |
 | `--watch N` | Re-scan every N seconds and process only new folders |
 | `--output-dir DIR` | Copy merged results to `DIR` |
+| `--log-file FILE` | Write a rotating log file to `FILE` |
 | `--verbose` | Debug logging |
 | `--quiet` | Warnings/errors only |
 
@@ -197,7 +208,17 @@ This message is usually a warning from `pydicom`, not a fatal error. In most cas
 
 ### Nothing appears immediately in the output folder
 
-On the first `--watch` pass, the script may be walking many old patient folders before it reaches the newest studies. Give the first scan time to finish, especially on large Vatech databases.
+The current watch logic starts processing folders as soon as it finds them. It no longer waits for a full candidate list before starting merges.
+
+If the output folder is still empty:
+
+- check the console for lines like `Found processable folder`, `Found Vatech 3D archive`, `[OK]`, or `[FAILED]`
+- open the log file `dicompressor-vatech.log` in the script folder, or your custom `--log-file` path
+- make sure the studies really live in nested `CT...` folders with `DCM_FILE.CT` inside
+
+### First scan is still slower than later scans
+
+That is normal on large Vatech databases with years of historical studies. The script still needs to walk the tree, but it now logs scan progress and starts merging folders while the scan is still running.
 
 ## Marker File
 
