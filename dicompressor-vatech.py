@@ -313,7 +313,7 @@ def find_mergeable_dicom_files(folder: str) -> List[str]:
     return results
 
 
-def iter_scan_roots(root: str, recursive: bool) -> Iterator[Tuple[int, str]]:
+def iter_scan_roots(root: str, recursive: bool, prune_done: bool = False) -> Iterator[Tuple[int, str]]:
     root = os.path.abspath(root)
 
     if not recursive:
@@ -327,6 +327,9 @@ def iter_scan_roots(root: str, recursive: bool) -> Iterator[Tuple[int, str]]:
 
     for current_root, dirnames, _ in os.walk(root):
         dirnames[:] = sorted(d for d in dirnames if not d.startswith("."))
+        if prune_done and is_already_done(current_root):
+            logger.debug("Pruning already processed subtree: %s", current_root)
+            dirnames[:] = []
         scanned_count += 1
         yield scanned_count, current_root
 
@@ -515,7 +518,7 @@ def run_once(target_path: str, recursive: bool, skip_if_done: bool, output_dir: 
     found_candidates = False
     processable_found = 0
 
-    for scanned_count, folder in iter_scan_roots(target_path, recursive):
+    for scanned_count, folder in iter_scan_roots(target_path, recursive, prune_done=skip_if_done):
         found_candidates = True
         if skip_if_done and is_already_done(folder):
             skipped += 1
@@ -604,7 +607,7 @@ def run_watch(target_path: str, recursive: bool, interval: int, output_dir: str 
             failed_count = 0
             discovered_count = 0
 
-            for scanned_count, folder in iter_scan_roots(target_path, recursive):
+            for scanned_count, folder in iter_scan_roots(target_path, recursive, prune_done=True):
                 if is_already_done(folder):
                     skipped_done += 1
                     logger.debug("Skipping already processed folder: %s", folder)
