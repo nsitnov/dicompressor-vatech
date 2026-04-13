@@ -53,6 +53,16 @@ def default_log_path() -> str:
     return os.path.join(os.path.dirname(os.path.abspath(__file__)), DEFAULT_LOG_FILENAME)
 
 
+def supports_unicode_output(stream=None) -> bool:
+    stream = stream or sys.stdout
+    encoding = getattr(stream, "encoding", None) or "utf-8"
+    try:
+        "╔═║╝".encode(encoding)
+        return True
+    except (LookupError, UnicodeEncodeError):
+        return False
+
+
 def configure_logging(verbose: bool, quiet: bool, log_file: str = "") -> str:
     console_level = logging.INFO
     if verbose:
@@ -97,28 +107,45 @@ def configure_logging(verbose: bool, quiet: bool, log_file: str = "") -> str:
 
 
 def print_banner() -> None:
-    print(
-        f"""
+    if supports_unicode_output():
+        print(
+            f"""
 ╔══════════════════════════════════════════════════════╗
 ║  {PROGRAM_NAME} v{VERSION:<28}║
 ║  Vatech 3D Merge Workflow                          ║
 ║  Handles folders of slices and DCM_FILE.CT archives║
 ╚══════════════════════════════════════════════════════╝
 """
+        )
+        return
+
+    print(
+        f"""
++------------------------------------------------------+
+|  {PROGRAM_NAME} v{VERSION:<28}|
+|  Vatech 3D Merge Workflow                            |
+|  Handles folders of slices and DCM_FILE.CT archives  |
++------------------------------------------------------+
+"""
     )
 
 
 def print_help_detailed() -> None:
     print_banner()
+    rule = "======" if not supports_unicode_output() else "══════"
+    rule_short = "==========" if not supports_unicode_output() else "═══════════"
+    rule_options = "========" if not supports_unicode_output() else "════════"
+    rule_long = "==============" if not supports_unicode_output() else "══════════════"
+    rule_examples = "========" if not supports_unicode_output() else "═════════"
     print(
         f"""
 USAGE:
-══════
+{rule}
 
   python dicompressor-vatech.py -j [options] -f/-F <folder>
 
 PATH MODES:
-═══════════
+{rule_short}
 
   -f PATH       Scan PATH recursively and process every folder that contains
                 either single-frame DICOM slices or Vatech .CT archives.
@@ -126,7 +153,7 @@ PATH MODES:
   -F PATH       Process PATH only (no subfolders).
 
 OPTIONS:
-════════
+{rule_options}
 
   -h                Display this help text
   -c                Display version information
@@ -141,7 +168,7 @@ OPTIONS:
   --quiet           Warning/error logging only
 
 WHAT THIS SCRIPT DOES:
-══════════════════════
+{rule_long}
 
   1. Finds folders that contain normal single-frame DICOM slices
   2. Finds Vatech archive files like DCM_FILE.CT or DCM_FILE.CT.dcm
@@ -152,7 +179,7 @@ WHAT THIS SCRIPT DOES:
   7. Writes {DONE_MARKER} so the folder is not processed again
 
 EXAMPLES:
-═════════
+{rule_examples}
 
   # Process one folder with normal DICOM slices or .CT archives:
   python dicompressor-vatech.py -j -F /path/to/patient_folder
