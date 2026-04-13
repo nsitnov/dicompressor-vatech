@@ -76,6 +76,28 @@ If you want the log somewhere else:
 python .\dicompressor-vatech.py -j --watch 300 --log-file "D:\Vatech\Logs\dicompressor-vatech.log" --output-dir "D:\Vatech\Merged" -f "D:\VatechDatabase\FMData\Files"
 ```
 
+### Optional Windows Auto-Start Service Installer
+
+If you want the watcher to start automatically with Windows and run hidden in the background, use the interactive NSSM installer:
+
+```powershell
+Set-ExecutionPolicy -Scope Process -ExecutionPolicy Bypass
+Unblock-File .\dicompressor-vatech-install-service.ps1
+.\dicompressor-vatech-install-service.ps1
+```
+
+The installer prompts for:
+
+- `nssm.exe` path
+- `python.exe` path
+- source/watch directory
+- output directory
+- log file path
+- watch interval in seconds
+- service name and display name
+
+It creates a Windows service that runs at startup, restarts automatically if it exits, and keeps the watcher hidden from normal users.
+
 ### Optional Windows PowerShell Wrapper
 
 If you want to use the wrapper script instead of calling Python directly:
@@ -189,6 +211,13 @@ Fix:
 
 ```powershell
 Set-ExecutionPolicy -Scope Process -ExecutionPolicy Bypass
+```
+
+If you want to use the interactive Windows service installer, run the same command first and then start:
+
+```powershell
+Unblock-File .\dicompressor-vatech-install-service.ps1
+.\dicompressor-vatech-install-service.ps1
 ```
 
 ### `python` is not recognized

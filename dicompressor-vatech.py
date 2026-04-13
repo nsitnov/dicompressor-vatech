@@ -10,6 +10,7 @@ The original dicompressor.py remains unchanged for the generic workflow.
 """
 
 import argparse
+import builtins
 import json
 import logging
 import os
@@ -47,6 +48,23 @@ SCAN_PROGRESS_EVERY_FOLDERS = 250
 SCAN_PROGRESS_EVERY_SECONDS = 15.0
 
 logger = logging.getLogger("dicompressor.vatech")
+
+
+def console_print(*args, **kwargs) -> None:
+    try:
+        builtins.print(*args, **kwargs)
+    except UnicodeEncodeError:
+        sep = kwargs.get("sep", " ")
+        end = kwargs.get("end", "\n")
+        file = kwargs.get("file", sys.stdout)
+        flush = kwargs.get("flush", False)
+        text = sep.join("" if arg is None else str(arg) for arg in args) + end
+        encoding = getattr(file, "encoding", None) or "utf-8"
+        safe_text = text.encode(encoding, errors="replace").decode(encoding, errors="replace")
+        builtins.print(safe_text, end="", file=file, flush=flush)
+
+
+print = console_print
 
 
 def default_log_path() -> str:
