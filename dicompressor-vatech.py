@@ -617,17 +617,24 @@ def run_watch(target_path: str, recursive: bool, interval: int, output_dir: str 
                 pass_elapsed,
             )
 
+            sleep_seconds = max(0.0, interval - pass_elapsed)
             if new_count == 0 and failed_count == 0:
-                print(
-                    f"[{time.strftime('%H:%M:%S')}] No new folders. Waiting {interval}s...",
-                )
+                if sleep_seconds > 0:
+                    print(
+                        f"[{time.strftime('%H:%M:%S')}] No new folders. "
+                        f"Waiting {int(round(sleep_seconds))}s...",
+                    )
+                else:
+                    print(
+                        f"[{time.strftime('%H:%M:%S')}] No new folders. "
+                        "Starting the next scan immediately.",
+                    )
             else:
                 print(
                     f"[{time.strftime('%H:%M:%S')}] Pass #{pass_number}: processed {new_count} "
                     f"new folder(s), skipped {skipped_done}, failed {failed_count}."
                 )
 
-            sleep_seconds = max(0.0, interval - pass_elapsed)
             if sleep_seconds > 0:
                 logger.info(
                     "Waiting %.1fs before watch scan pass #%d",
