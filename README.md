@@ -218,7 +218,7 @@ If the output folder is still empty:
 
 ### First scan is still slower than later scans
 
-That is normal on large Vatech databases with years of historical studies. The script still needs to walk the tree, but it now logs scan progress and starts merging folders while the scan is still running.
+That is normal on large Vatech databases with years of historical studies. The script still needs to walk the tree, but it now logs scan progress and starts merging folders while the scan is still running. Later passes are lighter because done-marked study folders are skipped before deep file inspection.
 
 ## Marker File
 

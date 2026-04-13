@@ -286,46 +286,22 @@ def find_mergeable_dicom_files(folder: str) -> List[str]:
     return results
 
 
-def iter_processable_folders(
-    root: str, recursive: bool
-) -> Iterator[Tuple[str, List[str], List[str]]]:
+def iter_scan_roots(root: str, recursive: bool) -> Iterator[Tuple[int, str]]:
     root = os.path.abspath(root)
 
     if not recursive:
-        direct_dicom, archives = scan_folder_inputs(root)
-        if direct_dicom or archives:
-            logger.info(
-                "Found processable folder: %s (direct slices=%d, archives=%d)",
-                root,
-                len(direct_dicom),
-                len(archives),
-            )
-            yield root, direct_dicom, archives
+        yield 1, root
         return
 
     logger.info("Starting recursive scan under %s", root)
     scanned_count = 0
-    found_count = 0
     scan_started = time.time()
     last_progress_time = scan_started
 
     for current_root, dirnames, _ in os.walk(root):
         dirnames[:] = sorted(d for d in dirnames if not d.startswith("."))
         scanned_count += 1
-
-        direct_dicom, archives = scan_folder_inputs(current_root)
-        if direct_dicom or archives:
-            found_count += 1
-            logger.info(
-                "Found processable folder #%d after scanning %d folder(s): %s "
-                "(direct slices=%d, archives=%d)",
-                found_count,
-                scanned_count,
-                current_root,
-                len(direct_dicom),
-                len(archives),
-            )
-            yield current_root, direct_dicom, archives
+        yield scanned_count, current_root
 
         now = time.time()
         if (
@@ -333,20 +309,16 @@ def iter_processable_folders(
             or now - last_progress_time >= SCAN_PROGRESS_EVERY_SECONDS
         ):
             logger.info(
-                "Scan progress: scanned %d folder(s), found %d processable folder(s). "
-                "Current=%s",
+                "Scan progress: scanned %d folder(s). Current=%s",
                 scanned_count,
-                found_count,
                 current_root,
             )
             last_progress_time = now
 
     logger.info(
-        "Finished recursive scan under %s: scanned %d folder(s), found %d "
-        "processable folder(s) in %.1fs",
+        "Finished recursive scan under %s: scanned %d folder(s) in %.1fs",
         root,
         scanned_count,
-        found_count,
         time.time() - scan_started,
     )
 
@@ -514,14 +486,30 @@ def run_once(target_path: str, recursive: bool, skip_if_done: bool, output_dir: 
     skipped = 0
     failures: List[Tuple[str, str]] = []
     found_candidates = False
+    processable_found = 0
 
-    for folder, direct_dicom_files, archive_files in iter_processable_folders(target_path, recursive):
+    for scanned_count, folder in iter_scan_roots(target_path, recursive):
         found_candidates = True
         if skip_if_done and is_already_done(folder):
             skipped += 1
             print(f"SKIPPED (already processed): {folder}")
-            logger.info("Skipping already processed folder: %s", folder)
+            logger.debug("Skipping already processed folder: %s", folder)
             continue
+
+        direct_dicom_files, archive_files = scan_folder_inputs(folder)
+        if not direct_dicom_files and not archive_files:
+            continue
+
+        processable_found += 1
+        logger.info(
+            "Found processable folder #%d after scanning %d folder(s): %s "
+            "(direct slices=%d, archives=%d)",
+            processable_found,
+            scanned_count,
+            folder,
+            len(direct_dicom_files),
+            len(archive_files),
+        )
 
         try:
             report = process_folder(
@@ -539,7 +527,15 @@ def run_once(target_path: str, recursive: bool, skip_if_done: bool, output_dir: 
             logger.error("Failed to process %s: %s", folder, exc)
             print_failed_folder(folder, exc)
 
-    if not found_candidates:
+    if processable_found == 0:
+        if skip_if_done and skipped:
+            print("Nothing new to process.")
+            logger.info("Nothing new to process under %s", target_path)
+            return 0
+        if not found_candidates:
+            print(f"ERROR: No Vatech archives or mergeable DICOM slices found in {target_path}")
+            logger.warning("No processable folders found under %s", target_path)
+            return 1
         print(f"ERROR: No Vatech archives or mergeable DICOM slices found in {target_path}")
         logger.warning("No processable folders found under %s", target_path)
         return 1
@@ -581,14 +577,26 @@ def run_watch(target_path: str, recursive: bool, interval: int, output_dir: str 
             failed_count = 0
             discovered_count = 0
 
-            for folder, direct_dicom_files, archive_files in iter_processable_folders(
-                target_path, recursive
-            ):
-                discovered_count += 1
+            for scanned_count, folder in iter_scan_roots(target_path, recursive):
                 if is_already_done(folder):
                     skipped_done += 1
-                    logger.info("Skipping already processed folder: %s", folder)
+                    logger.debug("Skipping already processed folder: %s", folder)
                     continue
+
+                direct_dicom_files, archive_files = scan_folder_inputs(folder)
+                if not direct_dicom_files and not archive_files:
+                    continue
+
+                discovered_count += 1
+                logger.info(
+                    "Found processable folder #%d after scanning %d folder(s): %s "
+                    "(direct slices=%d, archives=%d)",
+                    discovered_count,
+                    scanned_count,
+                    folder,
+                    len(direct_dicom_files),
+                    len(archive_files),
+                )
 
                 try:
                     report = process_folder(
