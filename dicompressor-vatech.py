@@ -34,7 +34,7 @@ except ImportError:
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 from dicom_utils import find_dicom_files, is_dicom_file, merge_files_to_multiframe
 
-VERSION = "1.0.1-vatech"
+VERSION = "1.0.2-vatech"
 PROGRAM_NAME = "DicomPressor Vatech"
 DONE_MARKER = ".dicompressor_vatech_done"
 ARCHIVE_SUFFIXES = (".ct", ".ct.dcm")

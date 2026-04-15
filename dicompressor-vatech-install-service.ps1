@@ -1,14 +1,14 @@
 <#
 .SYNOPSIS
-    Interactive NSSM installer for the DicomPressor Vatech Windows service.
+    Interactive auto-start installer for the DicomPressor Vatech Windows watcher.
 
 .DESCRIPTION
-    Prompts for the important paths and watch interval, then creates an auto-start
-    hidden Windows service that runs dicompressor-vatech.py in watch mode.
+    Prompts for the important paths and watch interval, then creates a hidden
+    auto-start background task via the built-in Windows Task Scheduler.
 
 .NOTES
     Run this script from PowerShell as Administrator.
-    Requires NSSM: https://nssm.cc/
+    No external service wrapper is required.
 #>
 
 [CmdletBinding()]
@@ -213,6 +213,49 @@ function Invoke-CheckedExternal {
     }
 }
 
+function Get-ExistingScheduledTask {
+    param([string]$TaskName)
+
+    try {
+        return Get-ScheduledTask -TaskName $TaskName -ErrorAction Stop
+    }
+    catch {
+        return $null
+    }
+}
+
+function Register-DicompressorScheduledTask {
+    param(
+        [string]$TaskName,
+        [string]$Description,
+        [string]$PythonPath,
+        [string]$ScriptDir,
+        [string]$AppParameters
+    )
+
+    $action = New-ScheduledTaskAction -Execute $PythonPath -Argument $AppParameters -WorkingDirectory $ScriptDir
+    $trigger = New-ScheduledTaskTrigger -AtStartup
+    $principal = New-ScheduledTaskPrincipal -UserId "SYSTEM" -LogonType ServiceAccount -RunLevel Highest
+    $settings = New-ScheduledTaskSettingsSet `
+        -AllowStartIfOnBatteries `
+        -DontStopIfGoingOnBatteries `
+        -StartWhenAvailable `
+        -ExecutionTimeLimit ([TimeSpan]::Zero) `
+        -MultipleInstances IgnoreNew `
+        -RestartCount 99 `
+        -RestartInterval (New-TimeSpan -Minutes 1) `
+        -Hidden
+
+    Register-ScheduledTask `
+        -TaskName $TaskName `
+        -Action $action `
+        -Trigger $trigger `
+        -Principal $principal `
+        -Settings $settings `
+        -Description $Description `
+        -Force | Out-Null
+}
+
 if (-not (Test-Administrator)) {
     Write-Host "Run this script from PowerShell as Administrator." -ForegroundColor Red
     exit 1
@@ -227,18 +270,15 @@ if (-not (Test-Path -LiteralPath $pythonScript -PathType Leaf)) {
     exit 1
 }
 
-Write-Host "DicomPressor Vatech Windows Service Installer" -ForegroundColor Cyan
-Write-Host "This creates a hidden auto-start Windows service using NSSM." -ForegroundColor Cyan
+Write-Host "DicomPressor Vatech Windows Startup Task Installer" -ForegroundColor Cyan
+Write-Host "This creates a hidden auto-start background task using Windows Task Scheduler." -ForegroundColor Cyan
 Write-Host ""
 
-$detectedNssmCommand = Get-Command nssm.exe -ErrorAction SilentlyContinue | Select-Object -First 1
-$detectedNssm = Get-FirstExistingPath @(
-    $(if ($detectedNssmCommand) { $detectedNssmCommand.Source }),
-    (Join-Path $scriptDir "nssm.exe"),
-    (Join-Path $scriptDir "nssm\nssm.exe"),
-    "D:\nssm\nssm.exe",
-    "C:\nssm\nssm.exe"
-)
+if (-not (Get-Command Register-ScheduledTask -ErrorAction SilentlyContinue)) {
+    Write-Host "Windows Task Scheduler cmdlets are not available on this machine." -ForegroundColor Red
+    exit 1
+}
+
 $detectedPython = Get-DetectedPythonPath
 
 $defaultSource = if (Test-Path -LiteralPath "D:\VatechDatabase\FMData\Files" -PathType Container) {
@@ -254,15 +294,13 @@ $defaultLog = if (Test-Path -LiteralPath "D:\Vatech\Logs" -PathType Container) {
 }
 
 Write-Step "Paths"
-$nssmPath = Prompt-ExistingFile -Prompt "Path to nssm.exe" -Default $detectedNssm
 $pythonPath = Prompt-ExistingFile -Prompt "Path to python.exe" -Default $detectedPython
 $sourceDir = Prompt-Directory -Prompt "Source directory to watch" -Default $defaultSource
 $outputDir = Prompt-Directory -Prompt "Output directory for merged files" -Default $defaultOutput -CreateIfMissing $true
 $logFile = Prompt-FilePath -Prompt "Log file path" -Default $defaultLog
 
-Write-Step "Service"
-$serviceName = Prompt-Default -Prompt "Service name" -Default "DicomPressorVatech"
-$displayName = Prompt-Default -Prompt "Display name" -Default "DicomPressor Vatech"
+Write-Step "Task"
+$taskName = Prompt-Default -Prompt "Task name" -Default "DicomPressorVatech"
 
 $parsedInterval = 0
 while ($true) {
@@ -297,12 +335,9 @@ $serviceLogBase = [System.IO.Path]::Combine(
 )
 $scanStateFile = "$serviceLogBase.scan-state.json"
 $appParameters = "`"$pythonScript`" -j --watch $intervalSeconds --log-file `"$logFile`" --scan-state-file `"$scanStateFile`" --output-dir `"$outputDir`" -f `"$sourceDir`""
-$stdoutLog = "$serviceLogBase.service-stdout.log"
-$stderrLog = "$serviceLogBase.service-stderr.log"
-$description = "DicomPressor Vatech watch service. Source=$sourceDir Output=$outputDir Interval=${intervalSeconds}s"
+$description = "DicomPressor Vatech watch task. Source=$sourceDir Output=$outputDir Interval=${intervalSeconds}s"
 
 Write-Step "Summary"
-Write-Host "NSSM:            $nssmPath"
 Write-Host "Python:          $pythonPath"
 Write-Host "Script:          $pythonScript"
 Write-Host "Source dir:      $sourceDir"
@@ -310,57 +345,49 @@ Write-Host "Output dir:      $outputDir"
 Write-Host "Log file:        $logFile"
 Write-Host "Scan state file: $scanStateFile"
 Write-Host "Interval:        ${intervalSeconds}s"
-Write-Host "Service name:    $serviceName"
-Write-Host "Account:         LocalSystem"
+Write-Host "Task name:       $taskName"
+Write-Host "Task account:    SYSTEM"
 Write-Host ""
 
-if (-not (Prompt-YesNo -Prompt "Create or update this Windows service?" -Default $true)) {
+if (-not (Prompt-YesNo -Prompt "Create or update this startup task?" -Default $true)) {
     Write-Host "Cancelled." -ForegroundColor Yellow
     exit 0
 }
 
-$existingService = Get-Service -Name $serviceName -ErrorAction SilentlyContinue
-if ($existingService) {
-    Write-Host "Service '$serviceName' already exists. Reinstalling it with the new settings..." -ForegroundColor Yellow
+$existingTask = Get-ExistingScheduledTask -TaskName $taskName
+if ($existingTask) {
+    Write-Host "Task '$taskName' already exists. Re-registering it with the new settings..." -ForegroundColor Yellow
     try {
-        if ($existingService.Status -ne "Stopped") {
-            Stop-Service -Name $serviceName -Force -ErrorAction SilentlyContinue
-            Start-Sleep -Seconds 2
-        }
+        Stop-ScheduledTask -TaskName $taskName -ErrorAction SilentlyContinue
+        Start-Sleep -Seconds 1
     }
     catch {
     }
-    Invoke-CheckedExternal -FilePath $nssmPath -Arguments @("remove", $serviceName, "confirm")
+    Unregister-ScheduledTask -TaskName $taskName -Confirm:$false
     Start-Sleep -Seconds 1
 }
 
-Write-Step "Installing service"
-Invoke-CheckedExternal -FilePath $nssmPath -Arguments @("install", $serviceName, $pythonPath)
-Invoke-CheckedExternal -FilePath $nssmPath -Arguments @("set", $serviceName, "AppDirectory", $scriptDir)
-Invoke-CheckedExternal -FilePath $nssmPath -Arguments @("set", $serviceName, "AppParameters", $appParameters)
-Invoke-CheckedExternal -FilePath $nssmPath -Arguments @("set", $serviceName, "DisplayName", $displayName)
-Invoke-CheckedExternal -FilePath $nssmPath -Arguments @("set", $serviceName, "Description", $description)
-Invoke-CheckedExternal -FilePath $nssmPath -Arguments @("set", $serviceName, "ObjectName", "LocalSystem")
-Invoke-CheckedExternal -FilePath $nssmPath -Arguments @("set", $serviceName, "Start", "SERVICE_AUTO_START")
-Invoke-CheckedExternal -FilePath $nssmPath -Arguments @("set", $serviceName, "AppExit", "Default", "Restart")
-Invoke-CheckedExternal -FilePath $nssmPath -Arguments @("set", $serviceName, "AppStdout", $stdoutLog)
-Invoke-CheckedExternal -FilePath $nssmPath -Arguments @("set", $serviceName, "AppStderr", $stderrLog)
-Invoke-CheckedExternal -FilePath $nssmPath -Arguments @("set", $serviceName, "AppRotateFiles", "1")
-Invoke-CheckedExternal -FilePath $nssmPath -Arguments @("set", $serviceName, "AppRotateOnline", "1")
-Invoke-CheckedExternal -FilePath $nssmPath -Arguments @("set", $serviceName, "AppRotateBytes", "10485760")
+Write-Step "Registering scheduled task"
+Register-DicompressorScheduledTask `
+    -TaskName $taskName `
+    -Description $description `
+    -PythonPath $pythonPath `
+    -ScriptDir $scriptDir `
+    -AppParameters $appParameters
 
-if (Prompt-YesNo -Prompt "Start the service now?" -Default $true) {
-    Start-Service -Name $serviceName
+if (Prompt-YesNo -Prompt "Start the task now?" -Default $true) {
+    Start-ScheduledTask -TaskName $taskName
 }
 
 Write-Step "Done"
-Write-Host "Service installed successfully." -ForegroundColor Green
+Write-Host "Scheduled task installed successfully." -ForegroundColor Green
 Write-Host ""
 Write-Host "Useful commands:"
-Write-Host "  Get-Service $serviceName"
-Write-Host "  Restart-Service $serviceName"
-Write-Host "  Stop-Service $serviceName"
+Write-Host "  Get-ScheduledTask -TaskName $taskName"
+Write-Host "  Get-ScheduledTaskInfo -TaskName $taskName"
+Write-Host "  Start-ScheduledTask -TaskName $taskName"
+Write-Host "  Stop-ScheduledTask -TaskName $taskName"
 Write-Host "  Get-Content `"$logFile`" -Wait"
 Write-Host ""
 Write-Host "If you need to remove it later:"
-Write-Host "  `"$nssmPath`" remove $serviceName confirm"
+Write-Host "  Unregister-ScheduledTask -TaskName `"$taskName`" -Confirm:`$false"
