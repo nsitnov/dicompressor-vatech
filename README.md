@@ -148,6 +148,7 @@ The script is designed for that layout:
 | `--watch N` | Re-scan every N seconds and process only new folders |
 | `--output-dir DIR` | Copy merged results to `DIR` |
 | `--log-file FILE` | Write a rotating log file to `FILE` |
+| `--scan-state-file FILE` | Persistent per-folder mtime cache used by `--watch` to skip folders whose contents haven't changed. Pass an empty string to disable. |
 | `--verbose` | Debug logging |
 | `--quiet` | Warnings/errors only |
 

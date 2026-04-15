@@ -291,25 +291,27 @@ if ($LASTEXITCODE -ne 0) {
     }
 }
 
-$appParameters = "`"$pythonScript`" -j --watch $intervalSeconds --log-file `"$logFile`" --output-dir `"$outputDir`" -f `"$sourceDir`""
 $serviceLogBase = [System.IO.Path]::Combine(
     [System.IO.Path]::GetDirectoryName($logFile),
     [System.IO.Path]::GetFileNameWithoutExtension($logFile)
 )
+$scanStateFile = "$serviceLogBase.scan-state.json"
+$appParameters = "`"$pythonScript`" -j --watch $intervalSeconds --log-file `"$logFile`" --scan-state-file `"$scanStateFile`" --output-dir `"$outputDir`" -f `"$sourceDir`""
 $stdoutLog = "$serviceLogBase.service-stdout.log"
 $stderrLog = "$serviceLogBase.service-stderr.log"
 $description = "DicomPressor Vatech watch service. Source=$sourceDir Output=$outputDir Interval=${intervalSeconds}s"
 
 Write-Step "Summary"
-Write-Host "NSSM:         $nssmPath"
-Write-Host "Python:       $pythonPath"
-Write-Host "Script:       $pythonScript"
-Write-Host "Source dir:   $sourceDir"
-Write-Host "Output dir:   $outputDir"
-Write-Host "Log file:     $logFile"
-Write-Host "Interval:     ${intervalSeconds}s"
-Write-Host "Service name: $serviceName"
-Write-Host "Account:      LocalSystem"
+Write-Host "NSSM:            $nssmPath"
+Write-Host "Python:          $pythonPath"
+Write-Host "Script:          $pythonScript"
+Write-Host "Source dir:      $sourceDir"
+Write-Host "Output dir:      $outputDir"
+Write-Host "Log file:        $logFile"
+Write-Host "Scan state file: $scanStateFile"
+Write-Host "Interval:        ${intervalSeconds}s"
+Write-Host "Service name:    $serviceName"
+Write-Host "Account:         LocalSystem"
 Write-Host ""
 
 if (-not (Prompt-YesNo -Prompt "Create or update this Windows service?" -Default $true)) {
